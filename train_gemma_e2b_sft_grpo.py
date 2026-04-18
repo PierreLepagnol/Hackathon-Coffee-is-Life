@@ -16,7 +16,7 @@ from typing import Any
 from datasets import Dataset, load_dataset, load_from_disk
 from peft import PeftModel
 from trl import GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
-from unsloth import FastLanguageModel, FastModel
+from unsloth import FastLanguageModel
 from unsloth.chat_templates import (
     get_chat_template,
     standardize_data_formats,
@@ -347,24 +347,19 @@ def estimate_max_prompt_length(dataset: Dataset, tokenizer: Any, sample_size: in
 
 
 def load_sft_model_and_tokenizer(args: argparse.Namespace, adapter_path: str | None = None) -> tuple[Any, Any]:
-    model, tokenizer = FastModel.from_pretrained(
+    model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model_name,
-        dtype=None,
         max_seq_length=args.max_seq_length,
         load_in_4bit=args.load_in_4bit,
-        full_finetuning=False,
     )
     tokenizer = get_chat_template(tokenizer, chat_template=args.chat_template)
     if adapter_path:
         model = PeftModel.from_pretrained(model, adapter_path, is_trainable=True)
     else:
-        model = FastModel.get_peft_model(
+        model = FastLanguageModel.get_peft_model(
             model,
-            finetune_vision_layers=False,
-            finetune_language_layers=True,
-            finetune_attention_modules=True,
-            finetune_mlp_modules=True,
             r=args.lora_r,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
             bias="none",
