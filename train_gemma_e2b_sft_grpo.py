@@ -5,6 +5,8 @@ See `docs/DATA_FORMATS.md` for accepted dataset shapes.
 """
 from __future__ import annotations
 
+import unsloth  # noqa: F401 — must be imported first to patch transformers
+
 import argparse
 import os
 import re
