@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Two-stage Gemma 4 E2B fine-tuning with Unsloth (SFT then GRPO).
-
-See `docs/DATA_FORMATS.md` for accepted dataset shapes.
-"""
+"""Two-stage Qwen3.5-0.8B fine-tuning with Unsloth (SFT then GRPO)."""
 from __future__ import annotations
 
 import argparse
@@ -11,11 +8,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from unsloth import FastLanguageModel
+
 from datasets import Dataset, load_dataset, load_from_disk
 from peft import PeftModel
 from trl import GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
-from unsloth import FastLanguageModel
-from unsloth.chat_templates import get_chat_template, train_on_responses_only
 
 
 DEFAULT_GRPO_SYSTEM_PROMPT = (
@@ -35,19 +32,18 @@ ANSWER_BLOCK_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTAL
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train Gemma 4 E2B with SFT and GRPO using Unsloth.")
+    parser = argparse.ArgumentParser(description="Train Qwen3.5-0.8B with SFT and GRPO using Unsloth.")
     parser.add_argument("--stage", choices=["sft", "grpo", "all"], default="all")
-    parser.add_argument("--model-name", default="mistralai/Ministral-3-3B-Instruct-2512")
-    parser.add_argument("--chat-template", default="mistral")
-    parser.add_argument("--output-dir", default="outputs/gemma-4-e2b")
+    parser.add_argument("--model-name", default="unsloth/Qwen3.5-0.8B")
+    parser.add_argument("--output-dir", default="outputs/qwen3-5-0-8b")
     parser.add_argument("--adapter-path", default=None)
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--report-to", default="none")
     parser.add_argument("--logging-steps", type=int, default=1)
     parser.add_argument("--save-steps", type=int, default=100)
     parser.add_argument("--max-seq-length", type=int, default=4096)
-    parser.add_argument("--load-in-4bit", action="store_true", default=True)
-    parser.add_argument("--no-load-in-4bit", dest="load_in_4bit", action="store_false")
+    parser.add_argument("--load-in-4bit", action="store_true", default=False)
+    parser.add_argument("--load-in-4bit-on", dest="load_in_4bit", action="store_true")
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=16)
     parser.add_argument("--lora-dropout", type=float, default=0.0)
@@ -61,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sft-response-field", default="response")
     parser.add_argument("--sft-system-field", default=None)
     parser.add_argument("--sft-system-prompt", default=None)
-    parser.add_argument("--sft-batch-size", type=int, default=1)
+    parser.add_argument("--sft-batch-size", type=int, default=2)
     parser.add_argument("--sft-gradient-accumulation", type=int, default=4)
     parser.add_argument("--sft-learning-rate", type=float, default=2e-4)
     parser.add_argument("--sft-warmup-steps", type=int, default=5)
@@ -144,19 +140,12 @@ def content_to_text(content: Any) -> str:
     return str(content)
 
 
-def strip_leading_bos(text: str, tokenizer: Any) -> str:
-    bos_token = getattr(tokenizer, "bos_token", None)
-    if bos_token and text.startswith(bos_token):
-        return text[len(bos_token):]
-    return text.removeprefix("<bos>")
-
-
-def validate_gemma_multiturn_history(messages: list[dict[str, Any]], context: str) -> None:
+def validate_multiturn_history(messages: list[dict[str, Any]], context: str) -> None:
     for index, message in enumerate(messages):
         role = message.get("role")
         if role not in ALLOWED_DATASET_ROLES:
             raise ValueError(
-                f"{context}: Gemma 4 datasets should use only standard roles system/user/assistant. "
+                f"{context}: datasets should use only standard roles system/user/assistant. "
                 f"Found unsupported role '{role}' at turn {index}."
             )
     if len(messages) < 3:
@@ -167,7 +156,7 @@ def validate_gemma_multiturn_history(messages: list[dict[str, Any]], context: st
         content = content_to_text(message.get("content")).lower()
         if any(marker in content for marker in FORBIDDEN_HISTORY_MARKERS):
             raise ValueError(
-                f"{context}: Gemma 4 multi-turn history should keep only final visible answers. "
+                f"{context}: multi-turn history should keep only final visible answers. "
                 f"Remove prior thought blocks from assistant turn {index}."
             )
 
@@ -182,43 +171,37 @@ def validate_grpo_gold_answer(answer: str, context: str) -> None:
 
 def prepare_sft_dataset(dataset: Dataset, tokenizer: Any, args: argparse.Namespace) -> Dataset:
     columns = set(dataset.column_names)
+
     if args.sft_text_field in columns:
         return dataset
+
     if "conversations" in columns and args.sft_messages_field not in columns:
         dataset = dataset.rename_column("conversations", args.sft_messages_field)
         columns = set(dataset.column_names)
 
-    def render_messages(messages: list[dict[str, Any]]) -> str:
-        validate_gemma_multiturn_history(messages, context="SFT sample")
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-        return strip_leading_bos(text, tokenizer)
-
-    def format_batch(examples: dict[str, list[Any]]) -> dict[str, list[str]]:
-        batch_size = len(next(iter(examples.values())))
-        rendered_texts: list[str] = []
-        for index in range(batch_size):
-            if args.sft_messages_field in examples:
-                rendered_texts.append(render_messages(examples[args.sft_messages_field][index]))
-                continue
-            if "conversations" in examples:
-                rendered_texts.append(render_messages(examples["conversations"][index]))
-                continue
-
-            prompt = content_to_text(examples[args.sft_prompt_field][index])
-            response = content_to_text(examples[args.sft_response_field][index])
+    def to_text(example: dict[str, Any]) -> dict[str, str]:
+        if args.sft_messages_field in example:
+            messages = example[args.sft_messages_field]
+        else:
+            prompt = content_to_text(example.get(args.sft_prompt_field, ""))
+            response = content_to_text(example.get(args.sft_response_field, ""))
             system_prompt = args.sft_system_prompt
-            if args.sft_system_field and args.sft_system_field in examples:
-                system_prompt = content_to_text(examples[args.sft_system_field][index]) or system_prompt
-
+            if args.sft_system_field and args.sft_system_field in example:
+                system_prompt = content_to_text(example[args.sft_system_field]) or system_prompt
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             messages.append({"role": "assistant", "content": response})
-            rendered_texts.append(render_messages(messages))
-        return {"text": rendered_texts}
 
-    return dataset.map(format_batch, batched=True)
+        validate_multiturn_history(messages, context="SFT sample")
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        bos = getattr(tokenizer, "bos_token", None)
+        if bos and text.startswith(bos):
+            text = text[len(bos):]
+        return {"text": text}
+
+    return dataset.map(to_text)
 
 
 def extract_prompt_and_answer_from_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
@@ -232,9 +215,7 @@ def extract_prompt_and_answer_from_messages(messages: list[dict[str, Any]]) -> t
 
 def prepare_grpo_dataset(dataset: Dataset, args: argparse.Namespace) -> Dataset:
     columns = set(dataset.column_names)
-    if args.grpo_prompt_field in columns and args.grpo_answer_field in columns:
-        pass
-    elif args.grpo_messages_field not in columns:
+    if args.grpo_prompt_field not in columns and args.grpo_messages_field not in columns:
         raise ValueError(
             "GRPO dataset must contain either prompt+answer fields or a messages field ending with an assistant answer."
         )
@@ -262,7 +243,7 @@ def prepare_grpo_dataset(dataset: Dataset, args: argparse.Namespace) -> Dataset:
                 if not has_system:
                     prompt_messages = [{"role": "system", "content": args.grpo_system_prompt}, *prompt_messages]
 
-            validate_gemma_multiturn_history(prompt_messages, context="GRPO prompt")
+            validate_multiturn_history(prompt_messages, context="GRPO prompt")
             if not answer.strip():
                 raise ValueError(
                     "Each GRPO sample must have a non-empty gold answer. "
@@ -340,37 +321,12 @@ def estimate_max_prompt_length(dataset: Dataset, tokenizer: Any, sample_size: in
     return max_length
 
 
-def load_sft_model_and_tokenizer(args: argparse.Namespace, adapter_path: str | None = None) -> tuple[Any, Any]:
+def load_model_and_tokenizer(args: argparse.Namespace, adapter_path: str | None = None) -> tuple[Any, Any]:
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model_name,
         max_seq_length=args.max_seq_length,
         load_in_4bit=args.load_in_4bit,
     )
-    tokenizer = get_chat_template(tokenizer, chat_template=args.chat_template)
-    if adapter_path:
-        model = PeftModel.from_pretrained(model, adapter_path, is_trainable=True)
-    else:
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=args.lora_r,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            bias="none",
-            random_state=args.seed,
-            use_gradient_checkpointing="unsloth",
-        )
-    return model, tokenizer
-
-
-def load_grpo_model_and_tokenizer(args: argparse.Namespace, adapter_path: str | None = None) -> tuple[Any, Any]:
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_name,
-        max_seq_length=args.max_seq_length,
-        load_in_4bit=args.load_in_4bit,
-        fast_inference=False,
-    )
-    tokenizer = get_chat_template(tokenizer, chat_template=args.chat_template)
     if adapter_path:
         model = PeftModel.from_pretrained(model, adapter_path, is_trainable=True)
     else:
@@ -420,15 +376,6 @@ def run_sft(model: Any, tokenizer: Any, args: argparse.Namespace) -> Path:
             report_to=args.report_to,
         ),
     )
-
-    instruction_part = "<|turn>user\n"
-    response_part = "<|turn>model\n"
-    sample_text = dataset[0]["text"] if len(dataset) else ""
-    if instruction_part in sample_text and response_part in sample_text:
-        trainer = train_on_responses_only(trainer, instruction_part=instruction_part, response_part=response_part)
-    else:
-        print("Skipping response-only masking because the inferred Gemma markers were not found in the SFT text.")
-
     trainer.train()
     adapter_dir = output_dir / "adapter"
     save_adapter(model, tokenizer, adapter_dir)
@@ -494,22 +441,15 @@ def main() -> None:
     validate_args(args)
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-    model = None
-    tokenizer = None
     active_adapter_path = args.adapter_path
 
     if args.stage in {"sft", "all"}:
-        model, tokenizer = load_sft_model_and_tokenizer(args, adapter_path=active_adapter_path)
+        model, tokenizer = load_model_and_tokenizer(args, adapter_path=active_adapter_path)
         active_adapter_path = str(run_sft(model, tokenizer, args))
-        model = None
-        tokenizer = None
-
-    if args.stage == "grpo":
-        model, tokenizer = load_grpo_model_and_tokenizer(args, adapter_path=active_adapter_path)
+        del model, tokenizer
 
     if args.stage in {"grpo", "all"}:
-        if model is None or tokenizer is None:
-            model, tokenizer = load_grpo_model_and_tokenizer(args, adapter_path=active_adapter_path)
+        model, tokenizer = load_model_and_tokenizer(args, adapter_path=active_adapter_path)
         run_grpo(model, tokenizer, args)
 
 
