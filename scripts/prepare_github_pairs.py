@@ -24,8 +24,14 @@ import json
 import sys
 from pathlib import Path
 
-SYSTEM_PROMPT = (
+SFT_SYSTEM_PROMPT = (
     "Return only valid Python Polars code. "
+    "No markdown fences. "
+    "Assign the final Polars DataFrame to result. "
+)
+
+GRPO_SYSTEM_PROMPT = (
+    "Write your reasoning inside <reasoning>...</reasoning> and your final Polars code inside <answer>...</answer>. "
     "No markdown fences. "
     "Assign the final Polars DataFrame to result. "
 )
@@ -57,8 +63,9 @@ def load_records(path: Path, skip_malformed: bool) -> list[tuple[int, dict]]:
     return records
 
 
-def build_system_content(schema: list[dict]) -> str:
-    return SYSTEM_PROMPT + f"Available schema: {json.dumps(schema, ensure_ascii=False)}"
+def build_system_content(schema: list[dict], *, grpo: bool = False) -> str:
+    base = GRPO_SYSTEM_PROMPT if grpo else SFT_SYSTEM_PROMPT
+    return base + f"Available schema: {json.dumps(schema, ensure_ascii=False)}"
 
 
 def process(
@@ -114,12 +121,13 @@ def process(
                 )
                 continue
 
-            system_msg = {"role": "system", "content": build_system_content(schema)}
+            sft_system_msg = {"role": "system", "content": build_system_content(schema)}
+            grpo_system_msg = {"role": "system", "content": build_system_content(schema, grpo=True)}
             user_msg = {"role": "user", "content": question.strip()}
             assistant_msg = {"role": "assistant", "content": answer.strip()}
 
-            sft_records.append({"messages": [system_msg, user_msg, assistant_msg]})
-            grpo_records.append({"prompt": [system_msg, user_msg], "answer": answer.strip()})
+            sft_records.append({"messages": [sft_system_msg, user_msg, assistant_msg]})
+            grpo_records.append({"prompt": [grpo_system_msg, user_msg], "answer": answer.strip()})
 
     return sft_records, grpo_records, warnings
 
