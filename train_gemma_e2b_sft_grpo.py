@@ -37,7 +37,7 @@ ANSWER_BLOCK_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTAL
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Gemma 4 E2B with SFT and GRPO using Unsloth.")
     parser.add_argument("--stage", choices=["sft", "grpo", "all"], default="all")
-    parser.add_argument("--model-name", default="mistralai/Ministral-3B-Instruct-2410")
+    parser.add_argument("--model-name", default="mistralai/Ministral-3-3B-Instruct-2512")
     parser.add_argument("--chat-template", default="mistral")
     parser.add_argument("--output-dir", default="outputs/gemma-4-e2b")
     parser.add_argument("--adapter-path", default=None)
