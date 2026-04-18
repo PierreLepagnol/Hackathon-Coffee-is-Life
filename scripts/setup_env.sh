@@ -11,9 +11,9 @@ cd "$REPO_DIR"
 echo "=== Creating .venv (Python 3.11) ==="
 uv venv --python 3.11 .venv
 
-echo "=== Installing PyTorch (CUDA 12.8 wheels) ==="
+echo "=== Installing PyTorch 2.11.0 + matching torchvision (CUDA 12.8 wheels) ==="
 uv pip install --python .venv/bin/python \
-  torch torchvision torchaudio \
+  "torch==2.11.0" "torchvision==0.26.0" \
   --extra-index-url https://download.pytorch.org/whl/cu128
 
 echo "=== Installing Unsloth ==="
@@ -23,14 +23,19 @@ uv pip install --python .venv/bin/python \
 echo "=== Installing remaining dependencies ==="
 uv pip install --python .venv/bin/python \
   datasets \
-  trl \
+  "trl==0.18.2" \
   peft \
   transformers \
   accelerate \
+  mergekit \
   fastapi \
   python-dotenv \
-  pydantic \
-  vllm
+  pydantic
+
+echo "=== Patching trl bug: _is_package_available returns tuple not bool ==="
+sed -i \
+  's/^\(_[a-z_]*_available\) = _is_package_available(\(.*\))$/\1, _ = _is_package_available(\2)/' \
+  .venv/lib/python3.11/site-packages/trl/import_utils.py
 
 echo "=== Verifying GPU is visible to PyTorch ==="
 .venv/bin/python - <<'EOF'

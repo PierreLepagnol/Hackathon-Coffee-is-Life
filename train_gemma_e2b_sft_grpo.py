@@ -406,10 +406,13 @@ def run_sft(model: Any, tokenizer: Any, args: argparse.Namespace) -> Path:
     dataset = load_any_dataset(args.sft_dataset, args.sft_split, args.sft_dataset_config)
     dataset = prepare_sft_dataset(dataset, tokenizer, args)
 
+    # Gemma4Processor wraps a tokenizer; SFTTrainer needs the inner tokenizer directly
+    sft_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+
     output_dir = Path(args.output_dir) / "sft"
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=sft_tokenizer,
         train_dataset=dataset,
         args=SFTConfig(
             output_dir=str(output_dir),
