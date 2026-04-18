@@ -1,0 +1,18 @@
+[project]
+name = "hackathon-coffee-is-life"
+version = "0.1.0"
+description = "Coffee is Life — benchmarking small language models on Polars tasks."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "fastapi",
+    "python-dotenv",
+    "pydantic",
+    "torch",
+    "transformers",
+    "vllm",
+    "datasets",
+    "trl",
+    "peft",
+    "unsloth",
+]
