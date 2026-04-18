@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-MODEL_NAME = "Qwen/Qwen2.5-Coder-3B-Instruct"
+MODEL_NAME = "unsloth/gemma-4-E2B-it"
 
 
 app = FastAPI()
