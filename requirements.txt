@@ -1,0 +1,10 @@
+fastapi
+python-dotenv
+pydantic
+torch
+transformers
+vllm
+datasets
+trl
+peft
+unsloth
