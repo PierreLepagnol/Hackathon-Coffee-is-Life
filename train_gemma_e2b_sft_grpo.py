@@ -15,11 +15,7 @@ from datasets import Dataset, load_dataset, load_from_disk
 from peft import PeftModel
 from trl import GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
 from unsloth import FastLanguageModel
-from unsloth.chat_templates import (
-    get_chat_template,
-    standardize_data_formats,
-    train_on_responses_only,
-)
+from unsloth.chat_templates import get_chat_template, train_on_responses_only
 
 
 DEFAULT_GRPO_SYSTEM_PROMPT = (
@@ -189,7 +185,7 @@ def prepare_sft_dataset(dataset: Dataset, tokenizer: Any, args: argparse.Namespa
     if args.sft_text_field in columns:
         return dataset
     if "conversations" in columns and args.sft_messages_field not in columns:
-        dataset = standardize_data_formats(dataset)
+        dataset = dataset.rename_column("conversations", args.sft_messages_field)
         columns = set(dataset.column_names)
 
     def render_messages(messages: list[dict[str, Any]]) -> str:
