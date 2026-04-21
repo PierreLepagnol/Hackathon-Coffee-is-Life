@@ -1,4 +1,5 @@
 import json
+import pathlib
 import sys
 
 import torch
@@ -7,7 +8,24 @@ from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_NAME = "unsloth/gemma-4-E2B-it"
+SNIPPETS_PATH = pathlib.Path("artifacts/contextualized.jsonl")
 
+
+def load_snippets(path: pathlib.Path, max_snippets: int = 10) -> str:
+    snippets = []
+    with path.open() as f:
+        for i, line in enumerate(f):
+            if i >= max_snippets:
+                break
+            record = json.loads(line)
+            title = record.get("metadata", {}).get("snippet", {}).get("title", record["id"])
+            code = record.get("response", "")
+            if code:
+                snippets.append(f"# {title}\n{code}")
+    return "\n\n".join(snippets)
+
+
+SNIPPET_EXAMPLES = load_snippets(SNIPPETS_PATH) if SNIPPETS_PATH.exists() else ""
 
 app = FastAPI()
 
@@ -57,15 +75,19 @@ def chat(payload: ChatRequest) -> ChatResponse:
     if torch.cuda.is_available():
         print("CUDA device name:", torch.cuda.get_device_name(0))
 
+    system_prompt = (
+        "Return only valid Python Polars code. "
+        "No markdown fences. "
+        "Assign the final Polars DataFrame to result. "
+        f"Available datasets: {json.dumps(payload.tables, ensure_ascii=False)}"
+    )
+    if SNIPPET_EXAMPLES:
+        system_prompt += f"\n\nHere are some contextualized Polars code examples for reference:\n\n{SNIPPET_EXAMPLES}"
+
     messages = [
         {
             "role": "system",
-            "content": (
-                "Return only valid Python Polars code. "
-                "No markdown fences. "
-                "Assign the final Polars DataFrame to result. "
-                f"Available datasets: {json.dumps(payload.tables, ensure_ascii=False)}"
-            ),
+            "content": system_prompt,
         },
         {
             "role": "user",

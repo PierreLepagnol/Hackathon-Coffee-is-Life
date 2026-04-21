@@ -152,3 +152,7 @@ cython_debug/
 # PyCharm
 #  JetBrains specific template is maintained in a separate file from Github
 #  .idea/
+
+# Generated artifacts / local outputs
+outputs/
+infer
